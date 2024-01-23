@@ -6,6 +6,12 @@ import config
 import keyboard
 import serial
 import time
+import traceback
+
+offset_x = 0
+offset_y = 0
+offset_mul_x = 3.0
+offset_mul_y = 3.0
 
 class Aimbot:
     def __init__(self):
@@ -25,35 +31,56 @@ class Aimbot:
 
     def setup_serial_connection(self):
         """Setup the serial connection for arduino"""
-        self.arduino = serial.Serial(self.cfg['arduino_port'],
-                                self.cfg['arduino_baudrate'],
-                                timeout=0.1)
+        self.arduino = serial.Serial(self.cfg['arduino_port'], self.cfg['arduino_baudrate'], timeout=0.2)
 
     def calculate_distance(self, head_center):
-        distance = (self.cfg['width'] // 2 - head_center[0], self.cfg['height'] // 2 - head_center[1])
+        distance = (head_center[0] - self.cfg['width'] // 2, head_center[1] - self.cfg['height'] // 2)
         # 5 is a step. This value must be the same in the Mouse.move function on the arduino.
         # for example: if the distance on the x-axis is 100, then we take a step of 5 units 20 times
-        distance = tuple(-(i//5) for i in distance) # reverse sign
+        # distance = tuple(-(i//5) for i in distance) # reverse sign
         return distance
     
+    def calculate_distance_total(self, head_center):
+        return abs(head_center[0] - self.cfg['width'] // 2) + abs(head_center[1] - self.cfg['height'] // 2)
+
+    def center_of(self, xmin, ymin, xmax, ymax):
+        return xmin + (xmax-xmin) // 2, ymin + (ymax - ymin) // 2
+
     def send_message(self, distance):
-        serial_message = f"{distance[0]},{distance[1]}\n"
-        self.arduino.write(str.encode(serial_message))
+        x = distance[0] * offset_mul_x + offset_x
+        y = distance[1] * offset_mul_y + offset_y
+        self.arduino.write(b'm' + int(x).to_bytes(2, byteorder='little', signed=True) + int(y).to_bytes(2, byteorder='little', signed=True))
 
     def extract_bounding_box(self, df):
-        """Extract bounding box and class details from DataFrame"""
-        xmin = int(df.iloc[0, 0])
-        ymin = int(df.iloc[0, 1])
-        xmax = int(df.iloc[0, 2])
-        ymax = int(df.iloc[0, 3])
-        obj_class = df.iloc[0, 5]
+        xmin = -1
+        ymin = -1
+        xmax = -1
+        ymax = -1
+        min_distance = 100000
+        if df.empty:
+            return xmin, ymin, xmax, ymax
 
-        return xmin, ymin, xmax, ymax, obj_class
+        for i in range(len(df.index)):
+            """Extract bounding box and class details from DataFrame"""
+            _xmin = int(df.iloc[i, 0])
+            _ymin = int(df.iloc[i, 1])
+            _xmax = int(df.iloc[i, 2])
+            _ymax = int(df.iloc[i, 3])
+            dist = self.calculate_distance_total(self.center_of(_xmin, _ymin, _xmax, _ymax))
+            if dist < min_distance:
+                xmin = _xmin
+                ymin = _ymin
+                xmax = _xmax
+                ymax = _ymax
+                min_distance = dist
 
-    def draw_on_image(self, screenshot, head_center, bounding_box, obj_class):
+
+        return xmin, ymin, xmax, ymax
+
+    def draw_on_image(self, screenshot, head_center, bounding_box):
         """Draw the detected object on the image"""
         xmin, ymin, xmax, ymax = bounding_box
-        color = (255, 0, 0) if obj_class == 0 else (0, 0, 255)
+        color = (255, 0, 0)
         cv2.circle(screenshot, head_center, 5, (0, 255, 0), thickness = -1)
         cv2.rectangle(screenshot, (xmin, ymin), (xmax, ymax), color, 2)
         return screenshot
@@ -71,18 +98,17 @@ class Aimbot:
                 result = self.model(screenshot)
                 df = result.pandas().xyxy[0]
                 try:
-                    xmin, ymin, xmax, ymax, obj_class = self.extract_bounding_box(df)
-                    head_center = (xmin + (xmax-xmin) // 2, ymin + (ymax - ymin) // 2)
-
-                    screenshot = self.draw_on_image(screenshot, head_center, (xmin, ymin, xmax, ymax), obj_class)
-
-                    if keyboard.is_pressed('v'):
-                        self.send_message(self.calculate_distance(head_center))
-                        time.sleep(0.135)
+                    xmin, ymin, xmax, ymax = self.extract_bounding_box(df)
+                    if xmin >= 0:
+                        head_center = self.center_of(xmin, ymin, xmax, ymax)
+                        screenshot = self.draw_on_image(screenshot, head_center, (xmin, ymin, xmax, ymax))
+                        if keyboard.is_pressed('v'):
+                            self.send_message(self.calculate_distance(head_center))
 
                 except Exception as e:
                     pass
-                    # print(e)
+                    traceback.print_exc()
+                    print(e)
 
                 cv2.imshow("frame", screenshot)
                 if cv2.waitKey(1) == ord('q'):

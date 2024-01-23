@@ -162,3 +162,4 @@ cython_debug/
 yolov5
 dataset/csgo_dataset
 dataset/csgo_dataset.zip
+training/
