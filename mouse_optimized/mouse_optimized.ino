@@ -40,7 +40,7 @@ struct mClick {
 
 void setup() {
   Mouse.begin();
-  Serial.begin(115200);
+  Serial.begin(500000);
 }
 
 void loop() {
